@@ -66,3 +66,19 @@ ShutterOpen1     # Roda o motor num sentido
 ShutterClose1    # Roda no sentido inverso
 ShutterStop1     # Para o movimento
 
+```
+
+Inverter direção (se necessário):
+```bash
+bash
+Copy
+Edit
+ShutterInvert1
+```
+
+✅ Notas
+Usa Relay1i porque o EN do A4988 é ativo em LOW.
+
+PWM1 é usado para STEP.
+
+ShutterMode 4 é ideal para motores de passo (usa apenas STEP e DIR).
