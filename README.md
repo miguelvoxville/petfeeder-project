@@ -56,3 +56,11 @@ SetOption80 1
 ShutterMode 4
 ShutterRelay1 1
 ShutterFrequency 1000
+
+
+## 🧪 Testes de Movimento
+```bash
+ShutterOpen1     # Roda o motor num sentido
+ShutterClose1    # Roda no sentido inverso
+ShutterStop1     # Para o movimento
+
