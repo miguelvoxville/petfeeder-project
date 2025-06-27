@@ -58,6 +58,8 @@ ShutterRelay1 1
 ShutterFrequency 1000
 
 
+
+
 ## 🧪 Testes de Movimento
 ```bash
 ShutterOpen1     # Roda o motor num sentido
