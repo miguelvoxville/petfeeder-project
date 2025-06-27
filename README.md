@@ -5,3 +5,6 @@
 O teu botão está ligado a GPIO5 → define como Button1
 
 Tens pull-up interno ativo via resistor → configuração correta para Tasmota.
+
+💡 LED indicador
+LED ligado a GPIO13 → define como Led1 (ou LedLink se quiseres feedback de WiFi)
