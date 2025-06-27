@@ -89,3 +89,6 @@ bash
 Copy
 Edit
 Backlog SetOption132 1; MqttFingerprint1 00; MqttFingerprint2 00; Restart 1
+SetOption132 1 - muda de verificação por CA para fingerprint
+
+00… faz o Tasmota aprender a fingerprint no 1.º “hello” TLS
