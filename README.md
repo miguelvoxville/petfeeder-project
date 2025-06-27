@@ -21,30 +21,3 @@ GPIO13	Led1
 GPIO14	PWM1
 GPIO16	Relay3
 Outros	None
-
-
-
-🚀 Passos finais
-Corre na consola:
-
-bash
-Copy
-Edit
-SetOption80 1
-ShutterMode 4
-ShutterRelay1 1
-ShutterFrequency 1000
-Testa com:
-
-bash
-Copy
-Edit
-ShutterOpen1     # Abre o motor
-ShutterClose1    # Fecha (inverte)
-ShutterStop1     # Pára
-Se necessário inverter direção:
-
-bash
-Copy
-Edit
-ShutterInvert1
