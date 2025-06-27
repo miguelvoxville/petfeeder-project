@@ -79,3 +79,13 @@ Usa Relay1i porque o EN do A4988 é ativo em LOW.
 PWM1 é usado para STEP.
 
 ShutterMode 4 é ideal para motores de passo (usa apenas STEP e DIR).
+
+
+
+
+Na consola Tasmota:
+
+bash
+Copy
+Edit
+Backlog SetOption132 1; MqttFingerprint1 00; MqttFingerprint2 00; Restart 1
