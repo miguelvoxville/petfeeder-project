@@ -70,6 +70,9 @@ Inverter direção (se necessário):
 ShutterInvert1
 ```
 
+
+
+
 ✅ Notas
 Usa Relay1i porque o EN do A4988 é ativo em LOW.
 
