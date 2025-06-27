@@ -56,9 +56,7 @@ SetOption80 1
 ShutterMode 4
 ShutterRelay1 1
 ShutterFrequency 1000
-
-
-
+```
 
 ## 🧪 Testes de Movimento
 ```bash
