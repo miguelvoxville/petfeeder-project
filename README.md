@@ -13,11 +13,11 @@ LED ligado a GPIO13 → define como Led1 (ou LedLink se quiseres feedback de WiF
 📍 Módulo
 Seleciona Module Type: Generic (18)
 
-📍 GPIO Mapping (via Configure Module)
-GPIO	Tasmota Function
-GPIO5	Button1
-GPIO12	Relay1i
-GPIO13	Led1
-GPIO14	PWM1
-GPIO16	Relay3
-Outros	None
+  📍 GPIO Mapping (via Configure Module)
+  GPIO	Tasmota Function
+  GPIO5	Button1
+  GPIO12	Relay1i
+  GPIO13	Led1
+  GPIO14	PWM1
+  GPIO16	Relay3
+  Outros	None
