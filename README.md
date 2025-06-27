@@ -65,14 +65,10 @@ ShutterFrequency 1000
 ShutterOpen1     # Roda o motor num sentido
 ShutterClose1    # Roda no sentido inverso
 ShutterStop1     # Para o movimento
-
 ```
 
 Inverter direção (se necessário):
 ```bash
-bash
-Copy
-Edit
 ShutterInvert1
 ```
 
