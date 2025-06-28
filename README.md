@@ -92,3 +92,24 @@ Backlog SetOption132 1; MqttFingerprint1 00; MqttFingerprint2 00; Restart 1
 SetOption132 1 - muda de verificação por CA para fingerprint
 
 00… faz o Tasmota aprender a fingerprint no 1.º “hello” TLS
+
+
+
+
+Aqui tens os payloads de exemplo prontos a copiar-colar para o tópico petfeeder/command:
+
+Acção	Payload “bonito”	Payload minificado (cabe bem nos 512 bytes)
+Alimentar já	json { "command": "feed", "steps": 300, "speed": 800 }	{"command":"feed","steps":300,"speed":800}
+Guardar 4 horários	json { "schedules": [ { "hour": 8, "minute": 0, "steps": 200, "speed": 1000 }, { "hour": 12, "minute": 30, "steps": 250, "speed": 900 }, { "hour": 17, "minute": 45, "steps": 300, "speed": 800 }, { "hour": 21, "minute": 15, "steps": 350, "speed": 700 } ] }	{"schedules":[{"hour":8,"minute":0,"steps":200,"speed":1000},{"hour":12,"minute":30,"steps":250,"speed":900},{"hour":17,"minute":45,"steps":300,"speed":800},{"hour":21,"minute":15,"steps":350,"speed":700}]}
+Suspender agendamentos	json { "suspend": true }	{"suspend":true}
+Retomar agendamentos	json { "resume": true }	{"resume":true}
+
+
+
+{"schedules":[{"hour":8,"minute":0,"steps":200,"speed":1000},{"hour":12,"minute":30,"steps":250,"speed":900},{"hour":17,"minute":45,"steps":300,"speed":800},{"hour":21,"minute":15,"steps":350,"speed":700}]}
+
+
+	{"suspend":true}
+ 	{"resume":true}
+
+  {"command":"feed","steps":300,"speed":800}
