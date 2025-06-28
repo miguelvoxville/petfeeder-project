@@ -78,7 +78,6 @@ PubSubClient mqtt_client(secureClient);
 void runMotor(int steps, int speed) {
   Serial.printf("🚚 Motor: %d passos a %d µs\n", steps, speed);
   digitalWrite(EN_PIN, LOW);
-  digitalWrite(DIR_PIN, HIGH);
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN, HIGH);
     delayMicroseconds(speed);
@@ -147,9 +146,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     return;
   }
 
-  /* feed instantâneo */
+  /* ---------- feed instantâneo ---------- */
   if (doc["command"] == "feed") {
-    runMotor(doc["steps"] | 200, doc["speed"] | 800);
+  int steps   = doc["steps"]   | 200;   // default 200
+  int speed   = doc["speed"]   | 800;   // default 800 µs
+  bool rev    = doc["reverse"] | false; // default = sentido normal
+
+  digitalWrite(DIR_PIN, rev ? LOW : HIGH);  // LOW = inverso, HIGH = normal
+  runMotor(steps, speed);
   }
 
   /* suspender / retomar */
