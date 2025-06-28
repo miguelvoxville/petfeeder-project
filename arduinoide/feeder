@@ -1,5 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
 #include <time.h>
 #include <BearSSLHelpers.h>
 
@@ -54,24 +56,71 @@ CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
 -----END CERTIFICATE-----
 )EOF";
 
-// Função para acionar motor
-void feedNow() {
-  Serial.println("🚚 A rodar motor para alimentar...");
-  digitalWrite(EN_PIN, LOW);
-  digitalWrite(DIR_PIN, HIGH); // Ajusta se rodar no sentido errado
+// Estrutura do agendamento
+struct Schedule {
+  int hour = -1;
+  int minute = -1;
+  int steps = 200;
+  int speed = 800;
+} currentSchedule;
 
-  for (int i = 0; i < 200; i++) {
+time_t lastTrigger = 0;
+
+// Função para correr o motor
+void runMotor(int steps, int speed) {
+  Serial.println("🚚 A rodar motor...");
+  digitalWrite(EN_PIN, LOW);
+  digitalWrite(DIR_PIN, HIGH);
+
+  for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(1000);
+    delayMicroseconds(speed);
     digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(1000);
+    delayMicroseconds(speed);
   }
 
   digitalWrite(EN_PIN, HIGH);
   Serial.println("✅ Motor terminou de rodar.");
 }
 
-// Callback MQTT
+// Guardar agendamento
+void saveSchedule() {
+  File f = LittleFS.open("/schedule.json", "w");
+  if (!f) {
+    Serial.println("❌ Erro a guardar agendamento.");
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+  doc["hour"] = currentSchedule.hour;
+  doc["minute"] = currentSchedule.minute;
+  doc["steps"] = currentSchedule.steps;
+  doc["speed"] = currentSchedule.speed;
+  serializeJson(doc, f);
+  f.close();
+  Serial.println("✅ Agendamento guardado");
+}
+
+// Carregar agendamento
+void loadSchedule() {
+  if (!LittleFS.exists("/schedule.json")) return;
+
+  File f = LittleFS.open("/schedule.json", "r");
+  if (!f) return;
+
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, f);
+  if (!err) {
+    currentSchedule.hour = doc["hour"];
+    currentSchedule.minute = doc["minute"];
+    currentSchedule.steps = doc["steps"];
+    currentSchedule.speed = doc["speed"];
+    Serial.println("✅ Agendamento carregado da memória");
+  }
+  f.close();
+}
+
+// MQTT callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String msg;
   for (int i = 0; i < length; i++) msg += (char)payload[i];
@@ -80,12 +129,27 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("[MQTT] Mensagem recebida: ");
   Serial.println(msg);
 
-  if (msg == "feed") {
-    feedNow();
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, msg);
+
+  if (!err) {
+    if (doc.containsKey("hour") && doc.containsKey("minute")) {
+      currentSchedule.hour = doc["hour"];
+      currentSchedule.minute = doc["minute"];
+      currentSchedule.steps = doc["steps"] | 200;
+      currentSchedule.speed = doc["speed"] | 800;
+      saveSchedule();
+    } else if (doc["command"] == "feed") {
+      int steps = doc["steps"] | currentSchedule.steps;
+      int speed = doc["speed"] | currentSchedule.speed;
+      runMotor(steps, speed);
+    }
+  } else if (msg == "feed") {
+    runMotor(currentSchedule.steps, currentSchedule.speed);
   }
 }
 
-// WiFi
+// Conectar WiFi
 void connectWiFi() {
   WiFi.begin(ssid, password);
   Serial.print("🔌 [WiFi] A ligar...");
@@ -99,9 +163,12 @@ void connectWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-// NTP
+// Sincronizar hora com timezone PT + DST
 void syncTime() {
   configTime(gmt_offset_sec, daylight_offset_sec, ntp_server);
+  setenv("TZ", "WET-0WEST,M3.5.0/1,M10.5.0/2", 1);  // Portugal com horário de verão
+  tzset();
+
   while (time(nullptr) < 100000) {
     delay(500);
     Serial.print(".");
@@ -110,11 +177,10 @@ void syncTime() {
   Serial.println("⏰ [NTP] Hora sincronizada");
 }
 
-// MQTT
+// Conectar MQTT
 void connectMQTT() {
   BearSSL::X509List cert(ca_cert);
   secureClient.setTrustAnchors(&cert);
-
   mqtt_client.setServer(mqtt_broker, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
 
@@ -139,15 +205,27 @@ void setup() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   pinMode(EN_PIN, OUTPUT);
-  digitalWrite(EN_PIN, HIGH);  // Desativa por defeito
+  digitalWrite(EN_PIN, HIGH);
 
+  LittleFS.begin();
   connectWiFi();
   syncTime();
   connectMQTT();
+  loadSchedule();
 }
 
 // Loop
 void loop() {
   if (!mqtt_client.connected()) connectMQTT();
   mqtt_client.loop();
+
+  time_t now = time(nullptr);
+  struct tm* t = localtime(&now);
+
+  if (currentSchedule.hour == t->tm_hour &&
+      currentSchedule.minute == t->tm_min &&
+      abs(now - lastTrigger) > 60) {
+    runMotor(currentSchedule.steps, currentSchedule.speed);
+    lastTrigger = now;
+  }
 }
