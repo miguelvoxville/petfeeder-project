@@ -1,12 +1,12 @@
 /* =========================================================
-   Pet Feeder ESP8266  –  versão com FW_VERSION + suspend
+   Pet Feeder ESP8266 – FW_VERSION + WiFi fallback + triple-tap reset
    ========================================================= */
 #include <ESP8266WiFi.h>
+#include <WiFiManager.h>        // portal cativo
+#include <Ticker.h>             // piscar LED
 
-/* ------ pacote MQTT até 1 024 B ------ */
 #define MQTT_MAX_PACKET_SIZE 1024
 #include <PubSubClient.h>
-/* ------------------------------------ */
 
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -14,11 +14,18 @@
 #include <BearSSLHelpers.h>
 
 /* ---------- VERSÃO DO FIRMWARE ---------- */
-#define FW_VERSION 1         // ↑ Incrementa p/ 2, 3, … quando quiseres limpar regras
+#define FW_VERSION 1
 
-/* ---------- Wi-Fi ---------- */
-const char* ssid     = "OsMarotos";
-const char* password = "CASA1234@";
+/* ---------- Pinos ---------- */
+#define LED_PIN   13      // D7 – LED externo (HIGH aceso)
+#define BTN_PIN    5      // D1 – TTP223 activo-LOW
+#define STEP_PIN  14
+#define DIR_PIN   16
+#define EN_PIN    12
+
+/* ---------- Triple-tap ---------- */
+#define REQUIRED_TAPS  3
+#define TAP_WINDOW_MS  10000
 
 /* ---------- MQTT ---------- */
 const char* mqtt_broker   = "ha86020d.ala.eu-central-1.emqxsl.com";
@@ -30,22 +37,46 @@ const char* mqtt_password = "Hormigo23888";
 /* ---------- NTP ---------- */
 const char* ntp_server = "pool.ntp.org";
 
-/* ---------- Pinos A4988 ---------- */
-#define STEP_PIN 14
-#define DIR_PIN  16
-#define EN_PIN   12
+/* ---------- LED piscar ---------- */
+Ticker ledTicker;
+void toggleLED(){ digitalWrite(LED_PIN,!digitalRead(LED_PIN)); }
+void startBlink(){ pinMode(LED_PIN,OUTPUT); digitalWrite(LED_PIN,LOW);
+                   ledTicker.attach(0.5,toggleLED); }
+void stopBlink(){  ledTicker.detach(); digitalWrite(LED_PIN,LOW); }
+
+/* ---------- Triple-tap vars ---------- */
+volatile uint8_t  tapCount   = 0;
+volatile unsigned long firstTap = 0;
+volatile bool resetFlag = false;
+
+ICACHE_RAM_ATTR void tapISR(){
+  if(digitalRead(BTN_PIN)==LOW){
+    unsigned long now=millis();
+    if(tapCount==0 || (now-firstTap)>TAP_WINDOW_MS){
+      tapCount=1; firstTap=now;
+    }else if(++tapCount>=REQUIRED_TAPS){
+      resetFlag=true; tapCount=0;
+    }
+  }
+}
+void executeReset(){
+  Serial.println("🛠️  Triple-tap – reset total");
+  WiFiManager wm; wm.resetSettings();            // limpa Wi-Fi
+  if(LittleFS.exists("/schedules.json"))
+      LittleFS.remove("/schedules.json");        // limpa horários
+  delay(300);
+  ESP.restart();
+}
 
 /* ---------- Estrutura de horários ---------- */
-struct Schedule {
-  int   hour = -1, minute = -1;
-  int   steps = 200, speed = 800;
-  int   antiSteps = 0;
-  float antiRatio = 0.0;
-  bool  reverse = false;
+struct Schedule{
+  int   hour=-1, minute=-1;
+  int   steps=200, speed=800;
+  int   antiSteps=0; float antiRatio=0.0;
+  bool  reverse=false;
 };
-
-Schedule schedules[4];     int   scheduledCount = 0;
-bool  scheduleSuspended = false;  time_t lastTrigger = 0;
+Schedule schedules[4]; int scheduledCount=0;
+bool scheduleSuspended=false; time_t lastTrigger=0;
 
 /* ---------- Certificado CA (encurtado) ---------- */
 static const char ca_cert[] PROGMEM = R"EOF(
@@ -77,122 +108,115 @@ CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
 BearSSL::WiFiClientSecure secureClient;
 PubSubClient mqtt_client(secureClient);
 
-/* ---------- Motor com anti-clog em blocos ---------- */
+/* ---------- Motor com anti-clog (original) ---------- */
 void runMotorAdvanced(int steps,int speed,bool revMain,
-                      int antiSteps,float antiRatio)
-{
+                      int antiSteps,float antiRatio){
   randomSeed(micros());
 
   /* 1. pré-pulso inverso */
-  if (antiSteps > 0) {
-    digitalWrite(DIR_PIN, revMain ? LOW : HIGH);
-    digitalWrite(EN_PIN, LOW);
-    for (int i=0;i<antiSteps;i++) {
+  if(antiSteps>0){
+    digitalWrite(DIR_PIN,revMain?LOW:HIGH);
+    digitalWrite(EN_PIN,LOW);
+    for(int i=0;i<antiSteps;i++){
       digitalWrite(STEP_PIN,HIGH); delayMicroseconds(speed);
       digitalWrite(STEP_PIN,LOW ); delayMicroseconds(speed);
     }
   }
 
   /* 2. rotação principal em blocos */
-  long totalInv  = (long)(steps * antiRatio);
-  if (antiSteps==0 || antiRatio<=0) totalInv = 0;
-  long blocks    = (antiSteps>0) ? totalInv/antiSteps : 0;
-  long fwdChunks = blocks + 1;
-  long fwdPerChunk = (blocks==0) ? steps
-                                 : (steps - totalInv)/fwdChunks;
+  long totalInv=(long)(steps*antiRatio);
+  if(antiSteps==0||antiRatio<=0) totalInv=0;
+  long blocks=(antiSteps>0)?totalInv/antiSteps:0;
+  long fwdChunks=blocks+1;
+  long fwdPerChunk=(blocks==0)?steps:(steps-totalInv)/fwdChunks;
 
-  long done = 0;
-  digitalWrite(EN_PIN, LOW);
+  long done=0; digitalWrite(EN_PIN,LOW);
 
-  for (long b=0; b<fwdChunks; b++) {
+  for(long b=0;b<fwdChunks;b++){
     /* bloco horário */
-    digitalWrite(DIR_PIN, revMain ? HIGH : LOW);
-    for (long i=0;i<fwdPerChunk && done<steps;i++,done++) {
+    digitalWrite(DIR_PIN,revMain?HIGH:LOW);
+    for(long i=0;i<fwdPerChunk && done<steps;i++,done++){
       digitalWrite(STEP_PIN,HIGH); delayMicroseconds(speed);
       digitalWrite(STEP_PIN,LOW ); delayMicroseconds(speed);
-      if (done%1000==0) yield();
+      if(done%1000==0) yield();
     }
     /* bloco inverso */
-    if (b < blocks) {
-      digitalWrite(DIR_PIN, revMain ? LOW : HIGH);
-      for (int j=0;j<antiSteps;j++,done++) {
+    if(b<blocks){
+      digitalWrite(DIR_PIN,revMain?LOW:HIGH);
+      for(int j=0;j<antiSteps;j++,done++){
         digitalWrite(STEP_PIN,HIGH); delayMicroseconds(speed);
         digitalWrite(STEP_PIN,LOW ); delayMicroseconds(speed);
-        if (done%1000==0) yield();
+        if(done%1000==0) yield();
       }
     }
   }
-  digitalWrite(EN_PIN, HIGH);
+  digitalWrite(EN_PIN,HIGH);
   Serial.println("✅ Motor terminou (anti-clog)");
 }
 
-/* ---------- Guardar horários ---------- */
-void saveAllSchedules() {
-  File f = LittleFS.open("/schedules.json","w");
-  if (!f) { Serial.println("❌ Falha a guardar"); return; }
+/* ---------- Guardar horários (original) ---------- */
+void saveAllSchedules(){
+  File f=LittleFS.open("/schedules.json","w");
+  if(!f){ Serial.println("❌ Falha a guardar"); return; }
 
   DynamicJsonDocument doc(1024);
-  doc["fw_version"] = FW_VERSION;          // grava versão actual
-  JsonArray arr = doc.createNestedArray("schedules");
-  for (int i=0;i<scheduledCount;i++) {
-    JsonObject o = arr.createNestedObject();
-    o["hour"]      = schedules[i].hour;
-    o["minute"]    = schedules[i].minute;
-    o["steps"]     = schedules[i].steps;
-    o["speed"]     = schedules[i].speed;
-    o["antiSteps"] = schedules[i].antiSteps;
-    o["antiRatio"] = schedules[i].antiRatio;
-    o["reverse"]   = schedules[i].reverse;
+  doc["fw_version"]=FW_VERSION;
+  JsonArray arr=doc.createNestedArray("schedules");
+  for(int i=0;i<scheduledCount;i++){
+    JsonObject o=arr.createNestedObject();
+    o["hour"]=schedules[i].hour;
+    o["minute"]=schedules[i].minute;
+    o["steps"]=schedules[i].steps;
+    o["speed"]=schedules[i].speed;
+    o["antiSteps"]=schedules[i].antiSteps;
+    o["antiRatio"]=schedules[i].antiRatio;
+    o["reverse"]=schedules[i].reverse;
   }
   serializeJson(doc,f); f.close();
   Serial.println("✅ Agendamentos guardados");
 }
 
-/* ---------- Carregar horários ---------- */
-void loadAllSchedules() {
-  if (!LittleFS.exists("/schedules.json")) return;
-  File f = LittleFS.open("/schedules.json","r");
-  if (!f) return;
+/* ---------- Carregar horários (original) ---------- */
+void loadAllSchedules(){
+  if(!LittleFS.exists("/schedules.json")) return;
+  File f=LittleFS.open("/schedules.json","r"); if(!f) return;
 
   DynamicJsonDocument doc(1024);
-  if (deserializeJson(doc,f)) { Serial.println("JSON inválido"); return; }
+  if(deserializeJson(doc,f)){ Serial.println("JSON inválido"); return; }
 
-  if (doc["fw_version"] != FW_VERSION) {
+  if(doc["fw_version"]!=FW_VERSION){
     Serial.println("⚠️ Versão diferente – regras antigas removidas");
     LittleFS.remove("/schedules.json");
-    scheduledCount = 0;
-    return;
+    scheduledCount=0; return;
   }
 
-  JsonArray arr = doc["schedules"]; scheduledCount = 0;
-  for (JsonObject o : arr) {
-    if (scheduledCount >= 4) break;
-    Schedule &s = schedules[scheduledCount++];
-    s.hour      = o["hour"];
-    s.minute    = o["minute"];
-    s.steps     = o["steps"];
-    s.speed     = o["speed"];
-    s.antiSteps = o["antiSteps"] | 0;
-    s.antiRatio = o["antiRatio"] | 0.0;
-    s.reverse   = o["reverse"]   | false;
+  JsonArray arr=doc["schedules"]; scheduledCount=0;
+  for(JsonObject o:arr){
+    if(scheduledCount>=4) break;
+    Schedule &s=schedules[scheduledCount++];
+    s.hour=o["hour"];     s.minute=o["minute"];
+    s.steps=o["steps"];   s.speed=o["speed"];
+    s.antiSteps=o["antiSteps"]|0;
+    s.antiRatio=o["antiRatio"]|0.0;
+    s.reverse=o["reverse"]|false;
     Serial.printf("📂 %02d:%02d  %d passos  anti:%d/%.2f  rev:%d\n",
                   s.hour,s.minute,s.steps,s.antiSteps,s.antiRatio,s.reverse);
   }
   f.close();
 }
 
-/* ---------- MQTT callback ---------- */
+/* ---------- MQTT callback (original) ---------- */
 void mqttCallback(char* topic,byte* payload,unsigned len){
   String msg; for(unsigned i=0;i<len;i++) msg+=(char)payload[i];
 
   DynamicJsonDocument doc(1024);
-  if (deserializeJson(doc,msg)) {
-    if (msg=="feed") runMotorAdvanced(200,800,false,0,0);
+  if(deserializeJson(doc,msg)){           // simples texto
+    if(msg=="feed") runMotorAdvanced(200,800,false,0,0);
     return;
   }
 
   /* feed instantâneo */
-  if (doc["command"] == "feed") {
+  if(doc["command"]=="feed"){
     runMotorAdvanced(doc["steps"]|200,
                      doc["speed"]|800,
                      doc["reverse"]|false,
@@ -200,25 +224,23 @@ void mqttCallback(char* topic,byte* payload,unsigned len){
                      doc["anticlog_ratio"]|0.0);
   }
 
-  /* suspender / retomar – agora só "suspend" */
-  if (doc.containsKey("suspend")) {
-    scheduleSuspended = doc["suspend"];
-    Serial.println(scheduleSuspended ? "⏸️ Suspenso" : "▶️ Retomado");
+  /* suspender / retomar */
+  if(doc.containsKey("suspend")){
+    scheduleSuspended=doc["suspend"];
+    Serial.println(scheduleSuspended? "⏸️ Suspenso":"▶️ Retomado");
   }
 
   /* novos agendamentos */
-  if (doc.containsKey("schedules")) {
-    JsonArray arr = doc["schedules"]; scheduledCount = 0;
-    for (JsonObject o : arr) {
-      if (scheduledCount >= 4) break;
-      Schedule &s = schedules[scheduledCount++];
-      s.hour      = o["hour"];
-      s.minute    = o["minute"];
-      s.steps     = o["steps"];
-      s.speed     = o["speed"];
-      s.antiSteps = o["anticlog_steps"] | 0;
-      s.antiRatio = o["anticlog_ratio"] | 0.0;
-      s.reverse   = o["reverse"] | false;
+  if(doc.containsKey("schedules")){
+    JsonArray arr=doc["schedules"]; scheduledCount=0;
+    for(JsonObject o:arr){
+      if(scheduledCount>=4) break;
+      Schedule &s=schedules[scheduledCount++];
+      s.hour=o["hour"];     s.minute=o["minute"];
+      s.steps=o["steps"];   s.speed=o["speed"];
+      s.antiSteps=o["anticlog_steps"]|0;
+      s.antiRatio=o["anticlog_ratio"]|0.0;
+      s.reverse=o["reverse"]|false;
       Serial.printf("🗓️ %d) %02d:%02d  %d passos  anti:%d/%.2f  rev:%d\n",
                     scheduledCount,s.hour,s.minute,s.steps,
                     s.antiSteps,s.antiRatio,s.reverse);
@@ -227,30 +249,37 @@ void mqttCallback(char* topic,byte* payload,unsigned len){
   }
 }
 
-/* ---------- Conectividade ---------- */
-void connectWiFi() {
-  Serial.print("🔌 [WiFi] A ligar");
-  WiFi.begin(ssid,password);
-  while (WiFi.status()!=WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println("\n✅ [WiFi] Ligado");
+/* ---------- Wi-Fi (WiFiManager) ---------- */
+void connectWiFi(){
+  Serial.println("🔌 [WiFi] A ligar…"); startBlink();
+  WiFiManager wm; wm.setConnectTimeout(30); wm.setConfigPortalTimeout(180);
+  if(wm.autoConnect("PetFeeder-Setup","12345678")){
+    stopBlink();
+    Serial.printf("✅ [WiFi] Ligado a %s  📶 IP %s\n",
+                  WiFi.SSID().c_str(),WiFi.localIP().toString().c_str());
+  }else{
+    Serial.println("⚠️  Portal aberto – configure Wi-Fi");
+  }
 }
-void syncTime() {
+
+/* ---------- Hora & MQTT ---------- */
+void syncTime(){
   Serial.print("⏰ [NTP] A sincronizar");
   configTime(0,0,ntp_server);
   setenv("TZ","WET-0WEST,M3.5.0/1,M10.5.0/2",1); tzset();
-  while (time(nullptr)<100000) { delay(500); Serial.print("."); }
+  while(time(nullptr)<100000){ delay(500); Serial.print("."); }
   Serial.println("\n✅ [NTP] Hora sincronizada");
 }
-void connectMQTT() {
+void connectMQTT(){
   BearSSL::X509List cert(ca_cert); secureClient.setTrustAnchors(&cert);
   mqtt_client.setServer(mqtt_broker,mqtt_port);
   mqtt_client.setCallback(mqttCallback);
-  while (!mqtt_client.connected()) {
-    if (mqtt_client.connect(("petfeeder-"+String(ESP.getChipId())).c_str(),
-        mqtt_username,mqtt_password)) {
+  while(!mqtt_client.connected()){
+    if(mqtt_client.connect(("petfeeder-"+String(ESP.getChipId())).c_str(),
+                           mqtt_username,mqtt_password)){
       Serial.println("✅ [MQTT] Ligado");
       mqtt_client.subscribe(mqtt_topic);
-    } else {
+    }else{
       Serial.printf("❌ [MQTT] %d\n", mqtt_client.state());
       delay(3000);
     }
@@ -258,36 +287,41 @@ void connectMQTT() {
 }
 
 /* ---------- Setup ---------- */
-void setup() {
+void setup(){
   Serial.begin(115200);
-  pinMode(STEP_PIN,OUTPUT); pinMode(DIR_PIN,OUTPUT); pinMode(EN_PIN,OUTPUT);
-  digitalWrite(EN_PIN,HIGH);
+  pinMode(STEP_PIN,OUTPUT); pinMode(DIR_PIN,OUTPUT);
+  pinMode(EN_PIN, OUTPUT);  digitalWrite(EN_PIN,HIGH);
+
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BTN_PIN), tapISR, FALLING);
 
   LittleFS.begin();
   connectWiFi();
   syncTime();
-  mqtt_client.setBufferSize(1024);      // buffer maior
+  mqtt_client.setBufferSize(1024);
   connectMQTT();
   loadAllSchedules();
 }
 
 /* ---------- Loop ---------- */
-void loop() {
-  if (!mqtt_client.connected()) connectMQTT();
+void loop(){
+  if(!mqtt_client.connected()) connectMQTT();
   mqtt_client.loop();
-  if (scheduleSuspended) return;
+  if(scheduleSuspended) return;
 
-  time_t now=time(nullptr);
-  struct tm* t=localtime(&now);
-
-  for (int i=0;i<scheduledCount;i++) {
+  time_t now=time(nullptr); struct tm* t=localtime(&now);
+  for(int i=0;i<scheduledCount;i++){
     Schedule &s=schedules[i];
-    if (s.hour==t->tm_hour && s.minute==t->tm_min &&
-        abs(now-lastTrigger)>60) {
+    if(s.hour==t->tm_hour && s.minute==t->tm_min &&
+       abs(now-lastTrigger)>60){
       Serial.printf("🚀 Executar %02d:%02d  %d passos  anti:%d/%.2f  rev:%d\n",
                     s.hour,s.minute,s.steps,s.antiSteps,s.antiRatio,s.reverse);
-      runMotorAdvanced(s.steps,s.speed,s.reverse,s.antiSteps,s.antiRatio);
-      lastTrigger = now;
+      runMotorAdvanced(s.steps,s.speed,s.reverse,
+                       s.antiSteps,s.antiRatio);
+      lastTrigger=now;
     }
   }
+
+  if(resetFlag){ noInterrupts(); resetFlag=false; interrupts();
+                 executeReset(); }
 }
