@@ -109,6 +109,11 @@ Retomar agendamentos	json { "resume": true }	{"resume":true}
 {"schedules":[{"hour":8,"minute":0,"steps":200,"speed":1000},{"hour":12,"minute":30,"steps":250,"speed":900},{"hour":17,"minute":45,"steps":300,"speed":800},{"hour":21,"minute":15,"steps":350,"speed":700}]}
 
 
+
+
+https://daisyui.com/components/timeline/
+
+
 	{"suspend":true}
  	{"resume":true}
 
